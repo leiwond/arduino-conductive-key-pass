@@ -1,0 +1,239 @@
+#include "mpr121.h"
+#include <Wire.h>
+
+int irqpin = 2;     // read from MPR121
+int buzzerpin = 12; // Make some Sounds
+int unlockpin = 4;  // triggers 12v relay to unlock
+int timeLeaveOpen = 3000; // lock door again after this
+
+boolean touchStates[12]; //to keep track of the previous touch states
+
+int touchSequence[6];
+int touchSequenceCode[] = {1, 1, 2, 2, 1, 1};
+int touchSequenceLength = 6;
+int curTouchSequenceIndex = -1;
+unsigned long lastTouchTime; // avoid on/off flickers
+int minTouchIntervalTime = 300;
+int resetAfterIdleTime = 5000;
+
+void setup(){
+  lastTouchTime = millis();
+  pinMode(unlockpin, OUTPUT);  
+  pinMode(buzzerpin,OUTPUT);
+
+  pinMode(irqpin, INPUT);
+  digitalWrite(irqpin, HIGH); //enable pullup resistor
+  
+  Serial.begin(9600);
+  Wire.begin();
+
+  mpr121_setup();
+}
+
+void loop(){
+  if (curTouchSequenceIndex > -1 && millis() - lastTouchTime > resetAfterIdleTime) {
+     // reset key input if idle
+     resetTouchSequence();
+  }
+  readTouchInputs();
+}
+
+void resetTouchSequence() {
+  for(int i = 0; i < touchSequenceLength; i++){
+      touchSequence[i] = 0;
+  }
+  curTouchSequenceIndex = -1;
+  lastTouchTime = millis();
+  touchBuzz();
+}
+
+void touchBuzz() {
+  for (int k = 0; k < 5; k++) {
+      // make some noize
+      digitalWrite(buzzerpin,HIGH);
+      delay(2);
+      digitalWrite(buzzerpin,LOW);
+      delay(1);
+   }
+}
+
+//read the touch state from the MPR121
+void readTouchInputs(){
+  if(!checkInterrupt()) {
+    Wire.requestFrom(0x5A,2); 
+    
+    byte LSB = Wire.read();
+    byte MSB = Wire.read();
+    
+    uint16_t touched = ((MSB << 8) | LSB); //16bits that make up the touch states
+    
+    for (int i=1; i < 5; i++){  // Check what electrodes were pressed
+      if(touched & (1<<i)){
+      
+        if(touchStates[i] == 0){
+          //pin i was just touched
+          Serial.print("pin ");
+          Serial.print(i);
+          Serial.println(" was just touched");
+
+          if(curTouchSequenceIndex == -1) {
+            curTouchSequenceIndex = 0;
+            touchSequence[0] = i;
+            lastTouchTime = millis();
+            touchBuzz();
+          }
+          else {
+            if (millis() - lastTouchTime > minTouchIntervalTime || touchSequence[curTouchSequenceIndex] != i) {
+              touchSequence[++curTouchSequenceIndex] = i;
+              lastTouchTime = millis();
+              touchBuzz();
+            }
+          }
+
+          Serial.print("TouchSequence");
+          for(int i = 0; i < touchSequenceLength; i++){
+            Serial.print(touchSequence[i]);
+          }
+
+          if (curTouchSequenceIndex == touchSequenceLength - 1) {
+            Serial.println("Code Sequence Entered");
+            // check if code successful
+            for(int i = 0; i < touchSequenceLength; i++){
+               Serial.print(touchSequence[i]);
+               if (touchSequence[i] != touchSequenceCode[i]) {
+                  // wrong code
+                  break;
+               }
+               if (i == touchSequenceLength - 1) {
+                 Serial.println("Correct Code!");
+                 // make happy noise
+                 for (int k = 30; k > 1; k--) {
+                    digitalWrite(buzzerpin,HIGH);
+                    delay(k);
+                    digitalWrite(buzzerpin,LOW);
+                    delay(1);
+                 }
+                 // unlock
+                 digitalWrite(unlockpin, HIGH); 
+                 delay(timeLeaveOpen);           
+                 digitalWrite(unlockpin, LOW);  
+                 delay(1000);     
+               }
+            }
+            
+            resetTouchSequence();
+          
+          }
+          
+        }else if(touchStates[i] == 1){
+          //pin i is still being touched
+        }  
+      
+        touchStates[i] = 1;      
+      }else{
+        if(touchStates[i] == 1){
+          Serial.print("pin ");
+          Serial.print(i);
+          Serial.println(" is no longer being touched");
+          
+          //pin i is no longer being touched
+       }
+        
+        touchStates[i] = 0;
+      }
+    
+    }
+    
+  }
+}
+
+
+
+
+void mpr121_setup(void){
+
+  set_register(0x5A, ELE_CFG, 0x00); 
+  
+  // Section A - Controls filtering when data is > baseline.
+  set_register(0x5A, MHD_R, 0x01);
+  set_register(0x5A, NHD_R, 0x01);
+  set_register(0x5A, NCL_R, 0x00);
+  set_register(0x5A, FDL_R, 0x00);
+
+  // Section B - Controls filtering when data is < baseline.
+  set_register(0x5A, MHD_F, 0x01);
+  set_register(0x5A, NHD_F, 0x01);
+  set_register(0x5A, NCL_F, 0xFF);
+  set_register(0x5A, FDL_F, 0x02);
+  
+  // Section C - Sets touch and release thresholds for each electrode
+  set_register(0x5A, ELE0_T, TOU_THRESH);
+  set_register(0x5A, ELE0_R, REL_THRESH);
+ 
+  set_register(0x5A, ELE1_T, TOU_THRESH);
+  set_register(0x5A, ELE1_R, REL_THRESH);
+  
+  set_register(0x5A, ELE2_T, TOU_THRESH);
+  set_register(0x5A, ELE2_R, REL_THRESH);
+  
+  set_register(0x5A, ELE3_T, TOU_THRESH);
+  set_register(0x5A, ELE3_R, REL_THRESH);
+  
+  set_register(0x5A, ELE4_T, TOU_THRESH);
+  set_register(0x5A, ELE4_R, REL_THRESH);
+  
+  set_register(0x5A, ELE5_T, TOU_THRESH);
+  set_register(0x5A, ELE5_R, REL_THRESH);
+  
+  set_register(0x5A, ELE6_T, TOU_THRESH);
+  set_register(0x5A, ELE6_R, REL_THRESH);
+  
+  set_register(0x5A, ELE7_T, TOU_THRESH);
+  set_register(0x5A, ELE7_R, REL_THRESH);
+  
+  set_register(0x5A, ELE8_T, TOU_THRESH);
+  set_register(0x5A, ELE8_R, REL_THRESH);
+  
+  set_register(0x5A, ELE9_T, TOU_THRESH);
+  set_register(0x5A, ELE9_R, REL_THRESH);
+  
+  set_register(0x5A, ELE10_T, TOU_THRESH);
+  set_register(0x5A, ELE10_R, REL_THRESH);
+  
+  set_register(0x5A, ELE11_T, TOU_THRESH);
+  set_register(0x5A, ELE11_R, REL_THRESH);
+  
+  // Section D
+  // Set the Filter Configuration
+  // Set ESI2
+  set_register(0x5A, FIL_CFG, 0x04);
+  
+  // Section E
+  // Electrode Configuration
+  // Set ELE_CFG to 0x00 to return to standby mode
+  set_register(0x5A, ELE_CFG, 0x0C);  // Enables all 12 Electrodes
+  
+  
+  // Section F
+  // Enable Auto Config and auto Reconfig
+  /*set_register(0x5A, ATO_CFG0, 0x0B);
+  set_register(0x5A, ATO_CFGU, 0xC9);  // USL = (Vdd-0.7)/vdd*256 = 0xC9 @3.3V   set_register(0x5A, ATO_CFGL, 0x82);  // LSL = 0.65*USL = 0x82 @3.3V
+  set_register(0x5A, ATO_CFGT, 0xB5);*/  // Target = 0.9*USL = 0xB5 @3.3V
+  
+  set_register(0x5A, ELE_CFG, 0x0C);
+  
+}
+
+
+boolean checkInterrupt(void){
+  
+  return digitalRead(irqpin);
+}
+
+
+void set_register(int address, unsigned char r, unsigned char v){
+    Wire.beginTransmission(address);
+    Wire.write(r);
+    Wire.write(v);
+    Wire.endTransmission();
+}
